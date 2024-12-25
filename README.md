@@ -1,4 +1,3 @@
-https://i.ibb.co/8KJj5Pd/IMG-20241225-200518-688.jpg
 
 # WRHT - Webcam Responsive Hand Tracking
 This project is made to control your device using hand movement.
