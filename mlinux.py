@@ -1,46 +1,34 @@
 import cv2
 import mediapipe
 import numpy as np
-import pyautogui
 import math
 import time
 import tkinter as tk
 from tkinter import ttk
 from typing import Tuple
-import subprocess
-import os
+import sys
+from PyQt5.QtWidgets import QApplication
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QCursor
 
-# Функция для получения текущей системы отображения
-def get_display_server():
-    return os.environ.get('XDG_SESSION_TYPE', 'unknown')
-
-# Функция для выполнения перемещения курсора через командную строку
-def move_cursor_wayland(x, y):
-    try:
-        subprocess.run(['ydotool', 'mousemove', str(int(x)), str(int(y))], check=True)
-    except subprocess.CalledProcessError:
-        pass
-
-def click_wayland():
-    try:
-        subprocess.run(['ydotool', 'click', '0x00'], check=True)
-    except subprocess.CalledProcessError:
-        pass
+# Глобальный экземпляр QApplication
+app = QApplication(sys.argv)
 
 class MouseMover:
     def __init__(self):
         self.smoothing = 0.5
         self.speed = 2.0
-        self.display_server = get_display_server()
 
     def move_cursor(self, x: int, y: int):
-        if self.display_server == 'wayland':
-            move_cursor_wayland(x, y)
-        else:
-            pyautogui.moveTo(x, y)
+        QCursor.setPos(int(x), int(y))
 
     def get_cursor_pos(self):
-        return pyautogui.position()
+        pos = QCursor.pos()
+        return pos.x(), pos.y()
+
+    def click(self):
+        from PyQt5.QtTest import QTest
+        QTest.mouseClick(None, Qt.LeftButton)
 
     def update(self, target_x: int, target_y: int):
         curr_x, curr_y = self.get_cursor_pos()
@@ -64,7 +52,10 @@ class HandTracking:
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         self.cap.set(cv2.CAP_PROP_FPS, 60)
         
-        self.screen_width, self.screen_height = pyautogui.size()
+        screen = app.primaryScreen().geometry()
+        self.screen_width = screen.width()
+        self.screen_height = screen.height()
+        
         self.FRAME_REDUCTION = 150
         self.SMOOTHING = 0.9
         self.CLICK_THRESHOLD = 0.02
@@ -76,7 +67,6 @@ class HandTracking:
         
         self.mouse_mover = MouseMover()
         self.auto_calibrate_camera()
-        pyautogui.FAILSAFE = False
 
     def auto_calibrate_camera(self):
         print("[+] Калибровка камеры...")
@@ -173,10 +163,7 @@ class HandTracking:
                     
                     is_clicking = distance < self.CLICK_THRESHOLD
                     if is_clicking and current_time - last_click_time > self.CLICK_COOLDOWN:
-                        if self.mouse_mover.display_server == 'wayland':
-                            click_wayland()
-                        else:
-                            pyautogui.click()
+                        self.mouse_mover.click()
                         last_click_time = current_time
             
             cv2.imshow("Hand Tracking", frame)
@@ -231,15 +218,6 @@ class CameraSelector:
         return self.selected_camera
 
 def main():
-    # Проверка наличия ydotool для Wayland
-    if get_display_server() == 'wayland':
-        try:
-            subprocess.run(['which', 'ydotool'], check=True)
-        except subprocess.CalledProcessError:
-            print("Ошибка: ydotool не установлен. Установите его с помощью:")
-            print("sudo apt install ydotool")
-            return
-
     selector = CameraSelector()
     camera_index = selector.get_camera()
     
