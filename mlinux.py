@@ -6,13 +6,8 @@ import time
 import tkinter as tk
 from tkinter import ttk
 from typing import Tuple
-import sys
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QCursor
-
-# Глобальный экземпляр QApplication
-app = QApplication(sys.argv)
+import subprocess
+import os
 
 class MouseMover:
     def __init__(self):
@@ -20,23 +15,74 @@ class MouseMover:
         self.speed = 2.0
 
     def move_cursor(self, x: int, y: int):
-        QCursor.setPos(int(x), int(y))
-
-    def get_cursor_pos(self):
-        pos = QCursor.pos()
-        return pos.x(), pos.y()
+        try:
+            subprocess.run(['xdotool', 'mousemove', str(int(x)), str(int(y))], check=True)
+        except:
+            pass
 
     def click(self):
-        from PyQt5.QtTest import QTest
-        QTest.mouseClick(None, Qt.LeftButton)
+        try:
+            subprocess.run(['xdotool', 'click', '1'], check=True)
+        except:
+            pass
+
+    def get_screen_size(self):
+        try:
+            output = subprocess.check_output(['xrandr']).decode()
+            for line in output.split('\n'):
+                if ' connected' in line and 'primary' in line:
+                    return map(int, line.split()[3].split('+')[0].split('x'))
+            return 1920, 1080
+        except:
+            return 1920, 1080
 
     def update(self, target_x: int, target_y: int):
-        curr_x, curr_y = self.get_cursor_pos()
-        dx = (target_x - curr_x) * self.speed
-        dy = (target_y - curr_y) * self.speed
-        new_x = int(curr_x + dx * self.smoothing)
-        new_y = int(curr_y + dy * self.smoothing)
-        self.move_cursor(new_x, new_y)
+        self.move_cursor(int(target_x), int(target_y))
+
+class CameraSelector:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("Выбор камеры")
+        self.selected_camera = None
+        self.root.configure(bg='#2b2b2b')
+        style = ttk.Style()
+        style.theme_use('clam')
+        self.cameras = self.list_cameras()
+        
+        label = tk.Label(self.root, text="Выберите камеру:", bg='#2b2b2b', fg='white', font=('Arial', 12))
+        label.pack(pady=10)
+        
+        self.combo = ttk.Combobox(self.root, values=list(self.cameras.values()), width=30, font=('Arial', 10))
+        self.combo.set("Выберите камеру")
+        self.combo.pack(padx=20, pady=10)
+        
+        ttk.Button(self.root, text="Подтвердить", command=self.on_select).pack(pady=10)
+        self.root.eval('tk::PlaceWindow . center')
+
+    def list_cameras(self):
+        cameras = {}
+        index = 0
+        while True:
+            cap = cv2.VideoCapture(index)
+            if not cap.read()[0]:
+                break
+            else:
+                cameras[index] = f"Камера {index}"
+                cap.release()
+            index += 1
+        return cameras
+
+    def on_select(self):
+        for key, value in self.cameras.items():
+            if value == self.combo.get():
+                self.selected_camera = key
+                break
+        self.root.quit()
+        self.root.destroy()
+
+    def get_camera(self):
+        self.root.mainloop()
+        return self.selected_camera
 
 class HandTracking:
     def __init__(self, camera_index=0):
@@ -52,9 +98,8 @@ class HandTracking:
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         self.cap.set(cv2.CAP_PROP_FPS, 60)
         
-        screen = app.primaryScreen().geometry()
-        self.screen_width = screen.width()
-        self.screen_height = screen.height()
+        self.mouse_mover = MouseMover()
+        self.screen_width, self.screen_height = self.mouse_mover.get_screen_size()
         
         self.FRAME_REDUCTION = 150
         self.SMOOTHING = 0.9
@@ -65,7 +110,6 @@ class HandTracking:
         self.prev_x = self.screen_width / 2
         self.prev_y = self.screen_height / 2
         
-        self.mouse_mover = MouseMover()
         self.auto_calibrate_camera()
 
     def auto_calibrate_camera(self):
@@ -172,52 +216,14 @@ class HandTracking:
                 
         self.cleanup()
 
-class CameraSelector:
-    def __init__(self):
-        self.root = tk.Tk()
-        self.root.title("Выбор камеры")
-        self.selected_camera = None
-        self.root.configure(bg='#2b2b2b')
-        style = ttk.Style()
-        style.theme_use('clam')
-        self.cameras = self.list_cameras()
-        
-        label = tk.Label(self.root, text="Выберите камеру:", bg='#2b2b2b', fg='white', font=('Arial', 12))
-        label.pack(pady=10)
-        
-        self.combo = ttk.Combobox(self.root, values=list(self.cameras.values()), width=30, font=('Arial', 10))
-        self.combo.set("Выберите камеру")
-        self.combo.pack(padx=20, pady=10)
-        
-        ttk.Button(self.root, text="Подтвердить", command=self.on_select).pack(pady=10)
-        self.root.eval('tk::PlaceWindow . center')
-
-    def list_cameras(self):
-        cameras = {}
-        index = 0
-        while True:
-            cap = cv2.VideoCapture(index)
-            if not cap.read()[0]:
-                break
-            else:
-                cameras[index] = f"Камера {index}"
-                cap.release()
-            index += 1
-        return cameras
-
-    def on_select(self):
-        for key, value in self.cameras.items():
-            if value == self.combo.get():
-                self.selected_camera = key
-                break
-        self.root.quit()
-        self.root.destroy()
-
-    def get_camera(self):
-        self.root.mainloop()
-        return self.selected_camera
-
 def main():
+    try:
+        subprocess.run(['which', 'xdotool'], check=True)
+    except subprocess.CalledProcessError:
+        print("Ошибка: xdotool не установлен. Установите его с помощью:")
+        print("sudo apt install xdotool")
+        return
+
     selector = CameraSelector()
     camera_index = selector.get_camera()
     
