@@ -6,15 +6,11 @@ import math
 import time
 import tkinter as tk
 from tkinter import ttk
+from ctypes import windll, Structure, c_long, byref
 import win32gui
 import win32con
 import win32api
-import keyboard
-from PIL import Image, ImageTk
-import pygame
-from ctypes import windll, Structure, c_long, byref, POINTER
 from typing import Tuple
-from win32gui import GetCursorInfo
 
 def move_cursor(x: int, y: int):
     win32api.SetCursorPos((x, y))
@@ -41,75 +37,6 @@ class MouseMover:
         new_y = int(curr_y + dy * self.smoothing)
         move_cursor(new_x, new_y)
         self.last_pos = (new_x, new_y)
-
-class ControlPanel:
-    def __init__(self, root):
-        self.window = tk.Toplevel()
-        self.window.title("Control Panel")
-        self.window.geometry("300x400")
-        self.window.overrideredirect(True)
-        self.window.attributes('-topmost', True, '-alpha', 0.9)
-        self.window.configure(bg='#1e1e1e')
-        
-        self.header = tk.Label(self.window, 
-                             text="Панель управления",
-                             fg='white',
-                             bg='#1e1e1e',
-                             font=('Arial', 12, 'bold'))
-        self.header.pack(pady=10)
-        
-        buttons = [
-            ("🔊 Громкость +", "volumeup"),
-            ("🔉 Громкость -", "volumedown"),
-            ("🔇 Без звука", "volumemute"),
-            ("⏯️ Пауза/Воспр.", "playpause"),
-            ("⏭️ Следующий", "nexttrack"),
-            ("⏮️ Предыдущий", "prevtrack"),
-            ("🖥️ Рабочий стол", "windows+d"),
-            ("🔍 Поиск", "windows+s")
-        ]
-        
-        for text, command in buttons:
-            btn = tk.Button(self.window,
-                          text=text,
-                          command=lambda cmd=command: self.execute_command(cmd),
-                          bg='#2d2d2d',
-                          fg='white',
-                          relief='flat',
-                          font=('Arial', 10),
-                          width=20,
-                          height=2)
-            btn.pack(pady=5, padx=20)
-            btn.bind('<Enter>', lambda e, b=btn: b.configure(bg='#3d3d3d'))
-            btn.bind('<Leave>', lambda e, b=btn: b.configure(bg='#2d2d2d'))
-        
-        self.close_btn = tk.Button(self.window,
-                                 text="✖ Закрыть",
-                                 command=self.hide,
-                                 bg='#ff4444',
-                                 fg='white',
-                                 relief='flat',
-                                 font=('Arial', 10))
-        self.close_btn.pack(pady=10)
-        
-        self.window.withdraw()
-
-    def show(self, x, y):
-        print("[DEBUG] Showing panel at", x, y)
-        self.window.deiconify()
-        self.window.geometry(f"+{x}+{y}")
-        self.window.update()
-        
-    def hide(self):
-        print("[DEBUG] Hiding panel")
-        self.window.withdraw()
-        
-    def execute_command(self, command):
-        print(f"[DEBUG] Executing command: {command}")
-        try:
-            keyboard.press_and_release(command)
-        except Exception as e:
-            print(f"[ERROR] Failed to execute command: {e}")
 
 class CameraSelector:
     def __init__(self):
@@ -186,17 +113,6 @@ class HandTracking:
         self.averaging_window = []
         self.prev_x = self.screen_width / 2
         self.prev_y = self.screen_height / 2
-
-        self.root = tk.Tk()
-        self.root.withdraw()
-        self.control_panel = ControlPanel(self.root)
-        self.panel_visible = False
-        
-        self.hand_positions = []
-        self.last_panel_toggle = 0
-        self.panel_cooldown = 1.0
-        self.min_wave_distance = 200
-        self.max_positions = 10
         
         self.mouse_mover = MouseMover()
         self.create_cursor_window()
@@ -215,7 +131,6 @@ class HandTracking:
                 
         if brightness_values:
             avg_brightness = np.mean(brightness_values)
-            
             if avg_brightness < 100:
                 self.cap.set(cv2.CAP_PROP_BRIGHTNESS, 150)
                 self.cap.set(cv2.CAP_PROP_CONTRAST, 150)
@@ -277,30 +192,6 @@ class HandTracking:
         win32gui.DeleteDC(mem_dc)
         win32gui.ReleaseDC(self.cursor_window, hdc)
 
-    def check_wave(self, hand_landmarks, frame_width):
-        index_mcp = hand_landmarks.landmark[self.mp_hands.HandLandmark.INDEX_FINGER_MCP]
-        middle_mcp = hand_landmarks.landmark[self.mp_hands.HandLandmark.MIDDLE_FINGER_MCP]
-        
-        palm_x = int((index_mcp.x + middle_mcp.x) / 2 * frame_width)
-        
-        self.hand_positions.append(palm_x)
-        
-        if len(self.hand_positions) > self.max_positions:
-            self.hand_positions.pop(0)
-            
-        if len(self.hand_positions) >= 5:
-            min_x = min(self.hand_positions)
-            max_x = max(self.hand_positions)
-            distance = max_x - min_x
-            
-            current_time = time.time()
-            if distance > self.min_wave_distance and current_time - self.last_panel_toggle > self.panel_cooldown:
-                self.last_panel_toggle = current_time
-                self.hand_positions = []
-                return True
-                
-        return False
-
     def process_hand(self, frame, hand_landmarks):
         middle_finger = hand_landmarks.landmark[self.mp_hands.HandLandmark.MIDDLE_FINGER_TIP]
         wrist = hand_landmarks.landmark[self.mp_hands.HandLandmark.WRIST]
@@ -339,14 +230,12 @@ class HandTracking:
         self.cap.release()
         cv2.destroyAllWindows()
         win32gui.DestroyWindow(self.cursor_window)
-        self.root.destroy()
 
     def run(self):
         last_click_time = 0
         print("\n[+] Управление:")
         print("- Перемещение курсора: движение среднего пальца")
-        print("- Клик: соединить большой и указательный пальцы") 
-        print("- Панель управления: быстрое движение рукой влево-вправо")
+        print("- Клик: соединить большой и указательный пальцы")
         print("- Выход: нажмите 'q'\n")
         
         while True:
@@ -358,30 +247,12 @@ class HandTracking:
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = self.hands.process(rgb_frame)
             
-            if self.hand_positions:
-                for i in range(1, len(self.hand_positions)):
-                    cv2.line(frame, 
-                            (self.hand_positions[i-1], int(frame.shape[0]/2)),
-                            (self.hand_positions[i], int(frame.shape[0]/2)),
-                            (0, 255, 0), 2)
-            
             if results.multi_hand_landmarks:
                 for hand_landmarks in results.multi_hand_landmarks:
                     self.mp_draw.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
                     
                     cursor_x, cursor_y = self.process_hand(frame, hand_landmarks)
                     self.prev_x, self.prev_y = cursor_x, cursor_y
-                    
-                    if self.check_wave(hand_landmarks, frame.shape[1]):
-                        print("[DEBUG] Wave detected!")
-                        if not self.panel_visible:
-                            self.panel_visible = True
-                            self.control_panel.show(int(cursor_x) + 50, int(cursor_y))
-                            print(f"[DEBUG] Showing panel at {cursor_x}, {cursor_y}")
-                        else:
-                            self.panel_visible = False
-                            self.control_panel.hide()
-                            print("[DEBUG] Panel hidden")
                     
                     current_time = time.time()
                     thumb = hand_landmarks.landmark[self.mp_hands.HandLandmark.THUMB_TIP]
@@ -390,20 +261,10 @@ class HandTracking:
                     
                     self.is_clicking = distance < self.CLICK_THRESHOLD
                     if self.is_clicking and current_time - last_click_time > self.CLICK_COOLDOWN:
-                        if not self.panel_visible:
-                            pyautogui.click()
+                        pyautogui.click()
                         last_click_time = current_time
                     
                     self.update_cursor(cursor_x, cursor_y, self.is_clicking)
-            else:
-                self.hand_positions = []
-            
-            cv2.putText(frame, f"Panel: {'Open' if self.panel_visible else 'Closed'}", 
-                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            
-            if len(self.hand_positions) > 0:
-                cv2.putText(frame, "Movement detected", 
-                           (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 165, 0), 2)
             
             cv2.imshow("Hand Tracking", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
