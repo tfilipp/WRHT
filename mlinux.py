@@ -1,5 +1,5 @@
 import cv2
-import mediapipe as mp
+import mediapipe
 import numpy as np
 import pyautogui
 import math
@@ -112,12 +112,12 @@ class CursorWindow:
 
 class HandTracking:
     def __init__(self, camera_index=0):
-        self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(
+        self.mediapipe_hands = mediapipe.solutions.hands
+        self.hands = self.mediapipe_hands.Hands(
             max_num_hands=1,
             min_detection_confidence=0.7,
             min_tracking_confidence=0.7)
-        self.mp_draw = mp.solutions.drawing_utils
+        self.mediapipe_draw = mediapipe.solutions.drawing_utils
         
         self.cap = cv2.VideoCapture(camera_index)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
@@ -139,13 +139,112 @@ class HandTracking:
         self.auto_calibrate_camera()
         pyautogui.FAILSAFE = False
 
-    # Остальные методы остаются без изменений
-    # ...
+    def auto_calibrate_camera(self):
+        print("[+] Калибровка камеры...")
+        brightness_values = []
+        
+        for _ in range(30):
+            success, frame = self.cap.read()
+            if success:
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                brightness_values.append(np.mean(gray))
+                
+        if brightness_values:
+            avg_brightness = np.mean(brightness_values)
+            if avg_brightness < 100:
+                self.cap.set(cv2.CAP_PROP_BRIGHTNESS, 150)
+                self.cap.set(cv2.CAP_PROP_CONTRAST, 150)
+                self.CLICK_THRESHOLD = 0.025
+            elif avg_brightness > 200:
+                self.cap.set(cv2.CAP_PROP_BRIGHTNESS, 50)
+                self.cap.set(cv2.CAP_PROP_CONTRAST, 50)
+                self.CLICK_THRESHOLD = 0.015
+                
+        print("[+] Калибровка завершена")
+
+    def process_hand(self, frame, hand_landmarks):
+        middle_finger = hand_landmarks.landmark[self.mediapipe_hands.HandLandmark.MIDDLE_FINGER_TIP]
+        wrist = hand_landmarks.landmark[self.mediapipe_hands.HandLandmark.WRIST]
+        mcp = hand_landmarks.landmark[self.mediapipe_hands.HandLandmark.MIDDLE_FINGER_MCP]
+        
+        palm_center_x = (wrist.x + mcp.x) / 2
+        palm_center_y = (wrist.y + mcp.y) / 2
+        
+        normalized_x = (middle_finger.x - palm_center_x) * 2 + palm_center_x
+        normalized_y = (middle_finger.y - palm_center_y) * 2 + palm_center_y
+        
+        cursor_x = np.interp(normalized_x,
+                           [self.FRAME_REDUCTION/frame.shape[1], 1-self.FRAME_REDUCTION/frame.shape[1]],
+                           [0, self.screen_width])
+        cursor_y = np.interp(normalized_y,
+                           [self.FRAME_REDUCTION/frame.shape[0], 1-self.FRAME_REDUCTION/frame.shape[0]],
+                           [0, self.screen_height])
+        
+        self.averaging_window.append((cursor_x, cursor_y))
+        if len(self.averaging_window) > self.window_size:
+            self.averaging_window.pop(0)
+            
+        avg_x = sum(x for x, _ in self.averaging_window) / len(self.averaging_window)
+        avg_y = sum(y for _, y in self.averaging_window) / len(self.averaging_window)
+        
+        smoothed_x = int(self.SMOOTHING * self.prev_x + (1 - self.SMOOTHING) * avg_x)
+        smoothed_y = int(self.SMOOTHING * self.prev_y + (1 - self.SMOOTHING) * avg_y)
+        
+        self.mouse_mover.update(smoothed_x, smoothed_y)
+        return smoothed_x, smoothed_y
+
+    def calculate_distance(self, p1, p2):
+        return math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2)
 
     def cleanup(self):
         self.cap.release()
         cv2.destroyAllWindows()
         self.cursor_window.destroy()
+
+    def run(self):
+        last_click_time = 0
+        print("\n[+] Управление:")
+        print("- Перемещение курсора: движение среднего пальца")
+        print("- Клик: соединить большой и указательный пальцы")
+        print("- Выход: нажмите 'q'\n")
+        
+        while True:
+            success, frame = self.cap.read()
+            if not success:
+                continue
+                
+            frame = cv2.flip(frame, 1)
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = self.hands.process(rgb_frame)
+            
+            if results.multi_hand_landmarks:
+                for hand_landmarks in results.multi_hand_landmarks:
+                    self.mediapipe_draw.draw_landmarks(
+                        frame, 
+                        hand_landmarks, 
+                        self.mediapipe_hands.HAND_CONNECTIONS
+                    )
+                    
+                    cursor_x, cursor_y = self.process_hand(frame, hand_landmarks)
+                    self.prev_x, self.prev_y = cursor_x, cursor_y
+                    
+                    current_time = time.time()
+                    thumb = hand_landmarks.landmark[self.mediapipe_hands.HandLandmark.THUMB_TIP]
+                    index = hand_landmarks.landmark[self.mediapipe_hands.HandLandmark.INDEX_FINGER_TIP]
+                    distance = self.calculate_distance(thumb, index)
+                    
+                    is_clicking = distance < self.CLICK_THRESHOLD
+                    if is_clicking and current_time - last_click_time > self.CLICK_COOLDOWN:
+                        pyautogui.click()
+                        last_click_time = current_time
+                    
+                    self.cursor_window.move(cursor_x, cursor_y)
+            
+            cv2.imshow("Hand Tracking", frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+                
+        self.cleanup()
 
 def main():
     selector = CameraSelector()
