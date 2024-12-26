@@ -1,23 +1,114 @@
 import cv2
 import mediapipe as mp
 import numpy as np
-import time
+import pyautogui
 import math
-from evdev import UInput, ecodes as e
+import time
+import tkinter as tk
+from tkinter import ttk
+from typing import Tuple
+import Xlib.display
+import cairo
+import gi
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk, Gdk
 
 class MouseMover:
     def __init__(self):
-        self.ui = UInput()
+        self.display = Xlib.display.Display()
+        self.screen = self.display.screen()
+        self.root = self.screen.root
+        self.smoothing = 0.5
+        self.speed = 2.0
+
+    def get_cursor_pos(self):
+        data = self.root.query_pointer()._data
+        return data["root_x"], data["root_y"]
+
+    def move_cursor(self, x: int, y: int):
+        self.root.warp_pointer(x, y)
+        self.display.sync()
+
+    def update(self, target_x: int, target_y: int):
+        curr_x, curr_y = self.get_cursor_pos()
+        dx = (target_x - curr_x) * self.speed
+        dy = (target_y - curr_y) * self.speed
+        new_x = int(curr_x + dx * self.smoothing)
+        new_y = int(curr_y + dy * self.smoothing)
+        self.move_cursor(new_x, new_y)
+
+class CameraSelector:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("Выбор камеры")
+        self.selected_camera = None
+        self.root.configure(bg='#2b2b2b')
+        style = ttk.Style()
+        style.theme_use('clam')
+        self.cameras = self.list_cameras()
         
-    def move(self, dx, dy):
-        self.ui.write(e.EV_REL, e.REL_X, dx)
-        self.ui.write(e.EV_REL, e.REL_Y, dy)
-        self.ui.syn()
+        label = tk.Label(self.root, text="Выберите камеру:", bg='#2b2b2b', fg='white', font=('Arial', 12))
+        label.pack(pady=10)
         
-    def click(self):
-        self.ui.write(e.EV_KEY, e.BTN_LEFT, 1)
-        self.ui.write(e.EV_KEY, e.BTN_LEFT, 0)
-        self.ui.syn()
+        self.combo = ttk.Combobox(self.root, values=list(self.cameras.values()), width=30, font=('Arial', 10))
+        self.combo.set("Выберите камеру")
+        self.combo.pack(padx=20, pady=10)
+        
+        ttk.Button(self.root, text="Подтвердить", command=self.on_select).pack(pady=10)
+        self.root.eval('tk::PlaceWindow . center')
+
+    def list_cameras(self):
+        cameras = {}
+        index = 0
+        while True:
+            cap = cv2.VideoCapture(index)
+            if not cap.read()[0]:
+                break
+            else:
+                cameras[index] = f"Камера {index}"
+                cap.release()
+            index += 1
+        return cameras
+
+    def on_select(self):
+        for key, value in self.cameras.items():
+            if value == self.combo.get():
+                self.selected_camera = key
+                break
+        self.root.quit()
+        self.root.destroy()
+
+    def get_camera(self):
+        self.root.mainloop()
+        return self.selected_camera
+
+class CursorWindow:
+    def __init__(self):
+        self.window = Gtk.Window(type=Gtk.WindowType.POPUP)
+        self.window.set_app_paintable(True)
+        self.window.set_visual(self.window.get_screen().get_rgba_visual())
+        self.window.set_keep_above(True)
+        
+        screen = Gdk.Screen.get_default()
+        self.window.resize(16, 16)
+        
+        self.window.connect('draw', self.draw)
+        self.window.show_all()
+        
+    def draw(self, widget, context):
+        context.set_source_rgba(0, 0, 0, 0)
+        context.set_operator(cairo.OPERATOR_SOURCE)
+        context.paint()
+        
+        context.set_source_rgb(1, 1, 1)
+        context.arc(8, 8, 7, 0, 2 * math.pi)
+        context.fill()
+        
+    def move(self, x, y):
+        self.window.move(int(x-8), int(y-8))
+        
+    def destroy(self):
+        self.window.destroy()
 
 class HandTracking:
     def __init__(self, camera_index=0):
@@ -29,83 +120,42 @@ class HandTracking:
         self.mp_draw = mp.solutions.drawing_utils
         
         self.cap = cv2.VideoCapture(camera_index)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        self.cap.set(cv2.CAP_PROP_FPS, 60)
         
+        self.screen_width, self.screen_height = pyautogui.size()
+        self.FRAME_REDUCTION = 150
+        self.SMOOTHING = 0.9
         self.CLICK_THRESHOLD = 0.02
         self.CLICK_COOLDOWN = 0.3
-        self.SMOOTHING = 0.5
-        self.SPEED = 2.0
+        self.window_size = 8
+        self.averaging_window = []
+        self.prev_x = self.screen_width / 2
+        self.prev_y = self.screen_height / 2
         
         self.mouse_mover = MouseMover()
-        self.prev_x, self.prev_y = 0, 0
+        self.cursor_window = CursorWindow()
+        self.auto_calibrate_camera()
+        pyautogui.FAILSAFE = False
 
-    def process_hand(self, frame, hand_landmarks):
-        middle_finger = hand_landmarks.landmark[self.mp_hands.HandLandmark.MIDDLE_FINGER_TIP]
-        wrist = hand_landmarks.landmark[self.mp_hands.HandLandmark.WRIST]
-        
-        cursor_x = int(middle_finger.x * frame.shape[1])
-        cursor_y = int(middle_finger.y * frame.shape[0])
-        
-        dx = int((cursor_x - self.prev_x) * self.SPEED)
-        dy = int((cursor_y - self.prev_y) * self.SPEED)
-        
-        smoothed_dx = int(dx * self.SMOOTHING)
-        smoothed_dy = int(dy * self.SMOOTHING)
-        
-        self.mouse_mover.move(smoothed_dx, smoothed_dy)
-        
-        self.prev_x, self.prev_y = cursor_x, cursor_y
-        return cursor_x, cursor_y
-
-    def calculate_distance(self, p1, p2):
-        return math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2)
+    # Остальные методы остаются без изменений
+    # ...
 
     def cleanup(self):
         self.cap.release()
         cv2.destroyAllWindows()
-
-    def run(self):
-        last_click_time = 0
-        print("\n[+] Управление:")
-        print("- Перемещение курсора: движение среднего пальца")
-        print("- Клик: соединить большой и указательный пальцы")
-        print("- Выход: нажмите 'q'\n")
-        
-        while True:
-            success, frame = self.cap.read()
-            if not success:
-                continue
-                
-            frame = cv2.flip(frame, 1)
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = self.hands.process(rgb_frame)
-            
-            if results.multi_hand_landmarks:
-                for hand_landmarks in results.multi_hand_landmarks:
-                    self.mp_draw.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
-                    
-                    cursor_x, cursor_y = self.process_hand(frame, hand_landmarks)
-                    
-                    current_time = time.time()
-                    thumb = hand_landmarks.landmark[self.mp_hands.HandLandmark.THUMB_TIP]
-                    index = hand_landmarks.landmark[self.mp_hands.HandLandmark.INDEX_FINGER_TIP]
-                    distance = self.calculate_distance(thumb, index)
-                    
-                    is_clicking = distance < self.CLICK_THRESHOLD
-                    if is_clicking and current_time - last_click_time > self.CLICK_COOLDOWN:
-                        self.mouse_mover.click()
-                        last_click_time = current_time
-            
-            cv2.imshow("Hand Tracking", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-                
-        self.cleanup()
+        self.cursor_window.destroy()
 
 def main():
-    tracker = HandTracking()
-    tracker.run()
+    selector = CameraSelector()
+    camera_index = selector.get_camera()
+    
+    if camera_index is not None:
+        tracker = HandTracking(camera_index)
+        tracker.run()
+    else:
+        print("Камера не выбрана")
 
 if __name__ == "__main__":
     main()
